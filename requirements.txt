@@ -1,0 +1,21 @@
+# GUI
+PyQt6>=6.6.0
+
+# Hotkeys
+keyboard>=0.13.5
+
+# Windows API
+pywin32>=306
+
+# Yandex Cloud
+yandex-cloud-ml-sdk>=0.2.0
+
+# Screenshots
+mss>=9.0.0
+Pillow>=10.0.0
+
+# HTTP requests (for image loading)
+requests>=2.31.0
+
+# Build
+pyinstaller>=6.0.0

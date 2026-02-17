@@ -1,0 +1,55 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+venv/
+ENV/
+env/
+.venv/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# PyInstaller
+*.manifest
+*.spec.bak
+
+# Logs
+*.log
+
+# Local config (contains API keys)
+# Uncomment if you don't want to track config.py:
+# config.py
+
+# Screenshots
+screenshots/
+*.png
+*.jpg
+*.jpeg
+
+# Temp files
+*.tmp
+*.temp
