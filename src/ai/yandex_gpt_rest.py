@@ -69,7 +69,7 @@ class YandexGPTRestClient:
         # Проверяем, есть ли актуальный токен
         if (self._iam_token and self._token_expires_at and 
             datetime.now(timezone.utc) < self._token_expires_at - timedelta(minutes=5)):
-            return self._iam_token
+            return f"Bearer {self._iam_token}"
         
         if not self._service_account_key:
             # Если нет авторизованного ключа, пробуем API-ключ

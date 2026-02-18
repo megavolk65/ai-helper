@@ -7,6 +7,10 @@ import base64
 from typing import Optional, Tuple
 import mss
 from PIL import Image
+import win32gui
+import win32ui
+import win32con
+from ctypes import windll
 
 
 class ScreenCapture:
@@ -60,6 +64,59 @@ class ScreenCapture:
     def capture_all_monitors(self) -> Optional[Image.Image]:
         """Захватить все мониторы"""
         return self.capture_screen(monitor=0)
+    
+    def capture_active_window(self) -> Optional[Image.Image]:
+        """
+        Захватить активное окно
+        
+        Returns:
+            PIL Image или None при ошибке
+        """
+        try:
+            # Получаем активное окно
+            hwnd = win32gui.GetForegroundWindow()
+            
+            # Получаем размеры окна
+            left, top, right, bottom = win32gui.GetWindowRect(hwnd)
+            width = right - left
+            height = bottom - top
+            
+            # Создаём device context
+            hwndDC = win32gui.GetWindowDC(hwnd)
+            mfcDC = win32ui.CreateDCFromHandle(hwndDC)
+            saveDC = mfcDC.CreateCompatibleDC()
+            
+            # Создаём bitmap
+            saveBitMap = win32ui.CreateBitmap()
+            saveBitMap.CreateCompatibleBitmap(mfcDC, width, height)
+            saveDC.SelectObject(saveBitMap)
+            
+            # Копируем содержимое окна
+            result = windll.user32.PrintWindow(hwnd, saveDC.GetSafeHdc(), 3)
+            
+            # Конвертируем в PIL Image
+            bmpinfo = saveBitMap.GetInfo()
+            bmpstr = saveBitMap.GetBitmapBits(True)
+            
+            img = Image.frombuffer(
+                'RGB',
+                (bmpinfo['bmWidth'], bmpinfo['bmHeight']),
+                bmpstr, 'raw', 'BGRX', 0, 1
+            )
+            
+            # Очищаем ресурсы
+            win32gui.DeleteObject(saveBitMap.GetHandle())
+            saveDC.DeleteDC()
+            mfcDC.DeleteDC()
+            win32gui.ReleaseDC(hwnd, hwndDC)
+            
+            self._last_screenshot = img
+            return img
+            
+        except Exception as e:
+            print(f"Ошибка захвата активного окна: {e}")
+            # Fallback на захват экрана
+            return self.capture_primary_monitor()
     
     def get_screenshot_base64(self, image: Optional[Image.Image] = None, 
                                max_size: Tuple[int, int] = (1920, 1080),

@@ -10,6 +10,7 @@ from typing import Optional
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 import config
+from src.ai.yandex_gpt_rest import YandexGPTRestClient
 
 
 class YandexVisionClient:
@@ -19,14 +20,25 @@ class YandexVisionClient:
     
     def __init__(self):
         self.folder_id = config.YANDEX_FOLDER_ID
-        self.api_key = config.YANDEX_API_KEY
+        # Используем shared IAM token manager из YandexGPTRestClient
+        self._gpt_client = YandexGPTRestClient()
         self._initialized = False
         self._error_message: Optional[str] = None
     
     def initialize(self) -> bool:
         """Инициализировать клиент"""
-        if not self.folder_id or not self.api_key:
-            self._error_message = "Не указаны YANDEX_FOLDER_ID или YANDEX_API_KEY в config.py"
+        if not self.folder_id:
+            self._error_message = "Не указан YANDEX_FOLDER_ID в config.py"
+            return False
+        
+        # Проверяем что GPT клиент может получить IAM токен
+        try:
+            token = self._gpt_client._get_iam_token()
+            if not token:
+                self._error_message = "Не удалось получить IAM токен"
+                return False
+        except Exception as e:
+            self._error_message = f"Ошибка при получении IAM токена: {str(e)}"
             return False
         
         self._initialized = True
@@ -62,9 +74,15 @@ class YandexVisionClient:
             ]
         
         try:
+            # Получаем токен авторизации (уже с префиксом Bearer/Api-Key)
+            auth_header = self._gpt_client._get_iam_token()
+            if not auth_header:
+                self._error_message = "Не удалось получить токен авторизации"
+                return None
+            
             headers = {
                 "Content-Type": "application/json",
-                "Authorization": f"Api-Key {self.api_key}",
+                "Authorization": auth_header
             }
             
             body = {
@@ -85,7 +103,17 @@ class YandexVisionClient:
             )
             
             if response.status_code != 200:
-                self._error_message = f"Vision API error: {response.status_code}"
+                self._error_message = f"Vision API error: {response.status_code} - {response.text}"
+                
+                # Логируем в файл
+                log_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "vision_debug.log")
+                with open(log_path, 'a', encoding='utf-8') as log:
+                    log.write(f"\n=== Vision API Error ===\n")
+                    log.write(f"Time: {__import__('datetime').datetime.now()}\n")
+                    log.write(f"Status: {response.status_code}\n")
+                    log.write(f"Auth header: {headers.get('Authorization', 'None')[:50]}...\n")
+                    log.write(f"Response: {response.text}\n")
+                
                 return None
             
             result = response.json()

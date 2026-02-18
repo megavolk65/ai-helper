@@ -156,15 +156,24 @@ class AIHelperApp(QObject):
     
     def _capture_and_process(self, show_after: bool):
         """Захват и обработка скриншота"""
-        # Делаем скриншот
-        screenshot_base64 = self.screen_capture.capture_and_encode(monitor=1)
+        # Делаем скриншот активного окна
+        screenshot_pil = self.screen_capture.capture_active_window()
         
-        if screenshot_base64:
+        if screenshot_pil:
+            # Конвертируем в base64 для Vision API
+            import base64
+            from io import BytesIO
+            
+            buffer = BytesIO()
+            screenshot_pil.save(buffer, format='PNG')
+            screenshot_bytes = buffer.getvalue()
+            screenshot_base64 = base64.b64encode(screenshot_bytes).decode('utf-8')
+            
             # Анализируем через Vision API
             context = self.vision_client.analyze_screenshot(screenshot_base64)
             
-            # Передаём контекст в оверлей
-            self.overlay.set_screenshot_context(context)
+            # Передаём контекст и изображение в оверлей
+            self.overlay.set_screenshot_context(context, screenshot_bytes)
             
             # Показываем уведомление
             self.tray.showMessage(

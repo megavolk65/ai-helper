@@ -11,8 +11,8 @@ from PyQt6.QtWidgets import (
     QTextBrowser, QLineEdit, QPushButton, QLabel,
     QApplication, QSizeGrip
 )
-from PyQt6.QtCore import Qt, QThread, pyqtSignal, QUrl
-from PyQt6.QtGui import QFont, QTextCursor, QDesktopServices
+from PyQt6.QtCore import Qt, QThread, pyqtSignal, QUrl, QByteArray
+from PyQt6.QtGui import QFont, QTextCursor, QDesktopServices, QPixmap
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
@@ -56,6 +56,7 @@ class OverlayWindow(QMainWindow):
         self.gpt_client = gpt_client
         self.context_detector = context_detector
         self._current_screenshot_context = ""
+        self._current_screenshot_image: Optional[QPixmap] = None
         self._worker: Optional[AIWorker] = None
         self._chat_history_html = ""
         
@@ -146,6 +147,43 @@ class OverlayWindow(QMainWindow):
         self.chat_display.anchorClicked.connect(self._handle_link_click)
         self.chat_display.setPlaceholderText("Задай вопрос...")
         main_layout.addWidget(self.chat_display, 1)
+        
+        # === Превью скриншота ===
+        self.screenshot_preview_container = QWidget()
+        screenshot_preview_layout = QVBoxLayout(self.screenshot_preview_container)
+        screenshot_preview_layout.setContentsMargins(0, 5, 0, 5)
+        screenshot_preview_layout.setSpacing(5)
+        
+        preview_header = QHBoxLayout()
+        preview_label = QLabel("📷 Превью скриншота:")
+        preview_label.setStyleSheet("color: #4fc3f7; font-size: 12px; font-weight: bold;")
+        preview_header.addWidget(preview_label)
+        
+        remove_preview_btn = QPushButton("✕")
+        remove_preview_btn.setFixedSize(20, 20)
+        remove_preview_btn.setObjectName("removePreviewButton")
+        remove_preview_btn.clicked.connect(self._remove_screenshot)
+        preview_header.addWidget(remove_preview_btn)
+        preview_header.addStretch()
+        
+        screenshot_preview_layout.addLayout(preview_header)
+        
+        self.screenshot_preview = QLabel()
+        self.screenshot_preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.screenshot_preview.setStyleSheet("""
+            QLabel {
+                background-color: #263238;
+                border: 2px solid #37474f;
+                border-radius: 4px;
+                padding: 5px;
+            }
+        """)
+        self.screenshot_preview.setMaximumHeight(150)
+        self.screenshot_preview.setScaledContents(False)
+        screenshot_preview_layout.addWidget(self.screenshot_preview)
+        
+        self.screenshot_preview_container.hide()
+        main_layout.addWidget(self.screenshot_preview_container)
         
         # === Панель ввода ===
         input_layout = QHBoxLayout()
@@ -324,8 +362,7 @@ class OverlayWindow(QMainWindow):
             self._set_input_enabled(True)
         
         # Сбрасываем контекст скриншота
-        self._current_screenshot_context = ""
-        self.screenshot_indicator.setText("")
+        self._remove_screenshot()
     
     def _on_response(self, response: str):
         """Получен ответ от AI"""
@@ -352,13 +389,33 @@ class OverlayWindow(QMainWindow):
         """Клик по кнопке скриншота"""
         self.screenshot_requested.emit()
     
-    def set_screenshot_context(self, context: str):
+    def set_screenshot_context(self, context: str, image_data: bytes = None):
         """Установить контекст скриншота"""
         self._current_screenshot_context = context
-        if context:
+        
+        if context and image_data:
+            # Создаём превью
+            pixmap = QPixmap()
+            pixmap.loadFromData(QByteArray(image_data))
+            
+            # Скейлим до разумного размера
+            if pixmap.width() > 400:
+                pixmap = pixmap.scaledToWidth(400, Qt.TransformationMode.SmoothTransformation)
+            
+            self._current_screenshot_image = pixmap
+            self.screenshot_preview.setPixmap(pixmap)
+            self.screenshot_preview_container.show()
             self.screenshot_indicator.setText("📷 Скриншот прикреплён")
         else:
-            self.screenshot_indicator.setText("")
+            self._remove_screenshot()
+    
+    def _remove_screenshot(self):
+        """Удалить скриншот"""
+        self._current_screenshot_context = ""
+        self._current_screenshot_image = None
+        self.screenshot_preview.clear()
+        self.screenshot_preview_container.hide()
+        self.screenshot_indicator.setText("")
     
     def _update_context(self):
         """Обновить контекст (игра/приложение)"""
