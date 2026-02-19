@@ -11,6 +11,7 @@ AI Helper - Главная точка входа
 import sys
 import os
 import winreg
+import ctypes
 
 # Добавляем путь к модулям
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -20,12 +21,12 @@ from PyQt6.QtGui import QIcon, QAction
 from PyQt6.QtCore import QObject, QTimer, pyqtSlot
 
 import config
+from src.localization import t, Localization
 from src.overlay import OverlayWindow
 from src.hotkeys import HotkeyManager
 from src.game_detect import ContextDetector
 from src.screenshot import ScreenCapture
-from src.ai.yandex_gpt_rest import YandexGPTRestClient
-from src.ai import YandexVisionClient
+from src.ai.openrouter_client import OpenRouterClient
 
 
 class AIHelperApp(QObject):
@@ -35,6 +36,9 @@ class AIHelperApp(QObject):
         self.app = QApplication(sys.argv)
         super().__init__(self.app)
         self.app.setQuitOnLastWindowClosed(False)  # Не закрывать при скрытии окна
+        
+        # Загружаем язык ДО создания компонентов
+        self._load_language()
         
         # Инициализация компонентов
         self._init_components()
@@ -52,8 +56,7 @@ class AIHelperApp(QObject):
         self.context_detector = ContextDetector()
         
         # AI клиенты
-        self.gpt_client = YandexGPTRestClient()
-        self.vision_client = YandexVisionClient()
+        self.gpt_client = OpenRouterClient()  # Используем OpenRouter с Gemma 3 27B
         
         # Захват экрана
         self.screen_capture = ScreenCapture()
@@ -63,6 +66,7 @@ class AIHelperApp(QObject):
             gpt_client=self.gpt_client,
             context_detector=self.context_detector
         )
+        self.overlay.autostart_checker = self._is_autostart_enabled
         
         # Менеджер горячих клавиш
         self.hotkey_manager = HotkeyManager()
@@ -72,60 +76,68 @@ class AIHelperApp(QObject):
         # Иконка
         icon_path = os.path.join(os.path.dirname(__file__), "assets", "icon.ico")
         if os.path.exists(icon_path):
-            icon = QIcon(icon_path)
+            self._tray_icon = QIcon(icon_path)
         else:
             # Используем стандартную иконку если своей нет
-            icon = self.app.style().standardIcon(
+            self._tray_icon = self.app.style().standardIcon(
                 self.app.style().StandardPixmap.SP_ComputerIcon
             )
         
         # Создаём трей
-        self.tray = QSystemTrayIcon(icon, self.app)
-        self.tray.setToolTip(f"{config.APP_NAME} v{config.APP_VERSION}")
+        self.tray = QSystemTrayIcon(self._tray_icon, self.app)
         
-        # Контекстное меню
+        # Клик по иконке
+        self.tray.activated.connect(self._on_tray_activated)
+        
+        # Создаём меню
+        self._create_tray_menu()
+        
+        # Подписываемся на смену языка
+        Localization.add_listener(self._create_tray_menu)
+        
+        # Показываем трей
+        self.tray.show()
+    
+    def _load_language(self):
+        """Загрузить язык из настроек"""
+        import json
+        settings_path = os.path.join(os.path.dirname(__file__), "settings.json")
+        try:
+            with open(settings_path, 'r', encoding='utf-8') as f:
+                settings = json.load(f)
+                lang = settings.get("language", "ru")
+                Localization.set_language(lang)
+        except:
+            pass
+    
+    def _create_tray_menu(self):
+        """Создать/пересоздать меню трея"""
+        # Обновляем tooltip
+        self.tray.setToolTip(f"{t('app_name')} v{config.APP_VERSION}")
+        
+        # Создаём новое меню
         menu = QMenu()
         
         # Показать/скрыть
-        show_action = QAction("Показать", self.app)
+        show_action = QAction(t("show"), self.app)
         show_action.triggered.connect(self._toggle_overlay)
         menu.addAction(show_action)
         
         menu.addSeparator()
         
-        # Горячие клавиши
-        hotkeys_menu = menu.addMenu("Горячие клавиши")
-        hotkeys_menu.addAction(f"Оверлей: {config.HOTKEY_TOGGLE_OVERLAY}")
-        hotkeys_menu.addAction(f"Скриншот: {config.HOTKEY_SCREENSHOT}")
-        
-        # Автозагрузка
-        self.autostart_action = QAction("Автозапуск", self.app)
-        self.autostart_action.setCheckable(True)
-        self.autostart_action.setChecked(self._is_autostart_enabled())
-        self.autostart_action.triggered.connect(self._toggle_autostart)
-        menu.addAction(self.autostart_action)
-        
-        menu.addSeparator()
-        
         # Очистить чат
-        clear_action = QAction("Очистить чат", self.app)
+        clear_action = QAction(t("clear_chat"), self.app)
         clear_action.triggered.connect(self._clear_chat)
         menu.addAction(clear_action)
         
         menu.addSeparator()
         
         # Выход
-        quit_action = QAction("Выход", self.app)
+        quit_action = QAction(t("exit"), self.app)
         quit_action.triggered.connect(self._quit)
         menu.addAction(quit_action)
         
         self.tray.setContextMenu(menu)
-        
-        # Клик по иконке
-        self.tray.activated.connect(self._on_tray_activated)
-        
-        # Показываем трей
-        self.tray.show()
     
     def _init_hotkeys(self):
         """Инициализация горячих клавиш"""
@@ -139,6 +151,18 @@ class AIHelperApp(QObject):
         
         # Оверлей
         self.overlay.screenshot_requested.connect(self._take_screenshot)
+        self.overlay.hotkeys_changed.connect(self._on_hotkeys_changed)
+        self.overlay.autostart_changed.connect(self._set_autostart)
+    
+    def _on_hotkeys_changed(self, hotkey_overlay: str, hotkey_screenshot: str):
+        """Обработчик изменения горячих клавиш"""
+        self.hotkey_manager.update_hotkeys(hotkey_overlay, hotkey_screenshot)
+        self.tray.showMessage(
+            config.APP_NAME,
+            t("settings_applied"),
+            QSystemTrayIcon.MessageIcon.Information,
+            2000
+        )
     
     def _toggle_overlay(self):
         """Переключить видимость оверлея"""
@@ -169,23 +193,21 @@ class AIHelperApp(QObject):
             screenshot_bytes = buffer.getvalue()
             screenshot_base64 = base64.b64encode(screenshot_bytes).decode('utf-8')
             
-            # Анализируем через Vision API
-            context = self.vision_client.analyze_screenshot(screenshot_base64)
-            
-            # Передаём контекст и изображение в оверлей
+            # Передаём изображение напрямую в оверлей (Gemini сам его проанализирует)
+            context = "Скриншот активного окна"
             self.overlay.set_screenshot_context(context, screenshot_bytes)
             
             # Показываем уведомление
             self.tray.showMessage(
                 config.APP_NAME,
-                "📷 Скриншот сделан и прикреплён к сообщению",
+                t("screenshot_taken"),
                 QSystemTrayIcon.MessageIcon.Information,
                 2000
             )
         else:
             self.tray.showMessage(
                 config.APP_NAME,
-                "❌ Ошибка создания скриншота",
+                t("screenshot_error"),
                 QSystemTrayIcon.MessageIcon.Warning,
                 2000
             )
@@ -201,6 +223,7 @@ class AIHelperApp(QObject):
         """Обработка клика по иконке трея"""
         if reason == QSystemTrayIcon.ActivationReason.Trigger:
             self._toggle_overlay()
+    
     
     def _clear_chat(self):
         """Очистить чат"""
@@ -233,12 +256,12 @@ class AIHelperApp(QObject):
         except WindowsError:
             return False
     
-    def _toggle_autostart(self):
-        """Переключить автозагрузку"""
+    def _set_autostart(self, enabled: bool):
+        """Установить автозагрузку"""
         try:
             key = self._get_autostart_key()
             
-            if self.autostart_action.isChecked():
+            if enabled:
                 # Включить автозапуск
                 exe_path = sys.executable
                 if exe_path.endswith("python.exe") or exe_path.endswith("pythonw.exe"):
@@ -250,41 +273,32 @@ class AIHelperApp(QObject):
                     value = f'"{exe_path}"'
                 
                 winreg.SetValueEx(key, config.APP_NAME, 0, winreg.REG_SZ, value)
-                self.tray.showMessage(
-                    config.APP_NAME,
-                    "Автозапуск включён",
-                    QSystemTrayIcon.MessageIcon.Information,
-                    2000
-                )
             else:
                 # Выключить автозапуск
                 try:
                     winreg.DeleteValue(key, config.APP_NAME)
                 except WindowsError:
                     pass
-                self.tray.showMessage(
-                    config.APP_NAME,
-                    "Автозапуск выключен",
-                    QSystemTrayIcon.MessageIcon.Information,
-                    2000
-                )
             
             winreg.CloseKey(key)
             
         except Exception as e:
             self.tray.showMessage(
                 config.APP_NAME,
-                f"Ошибка настройки автозапуска: {e}",
+                f"{t('autostart_error')} {e}",
                 QSystemTrayIcon.MessageIcon.Warning,
                 3000
             )
     
     def run(self):
         """Запуск приложения"""
+        # Получаем актуальную горячую клавишу из настроек
+        hotkey = self.hotkey_manager.hotkey_overlay or config.HOTKEY_TOGGLE_OVERLAY
+        
         # Показываем уведомление о запуске
         self.tray.showMessage(
             config.APP_NAME,
-            f"Запущен! Нажмите {config.HOTKEY_TOGGLE_OVERLAY} для вызова",
+            t("started_press_key").format(key=hotkey),
             QSystemTrayIcon.MessageIcon.Information,
             3000
         )
@@ -292,10 +306,28 @@ class AIHelperApp(QObject):
         return self.app.exec()
 
 
+def is_already_running():
+    """Проверка через Windows Mutex"""
+    MUTEX_NAME = "AIHelper_SingleInstance_Mutex"
+    
+    # Пытаемся создать mutex
+    kernel32 = ctypes.windll.kernel32
+    mutex = kernel32.CreateMutexW(None, False, MUTEX_NAME)
+    
+    # Если mutex уже существует - приложение уже запущено
+    ERROR_ALREADY_EXISTS = 183
+    if kernel32.GetLastError() == ERROR_ALREADY_EXISTS:
+        return True
+    
+    return False
+
+
 def main():
     """Главная функция"""
     # Проверяем, что приложение не запущено
-    # (можно добавить проверку через файл блокировки или named mutex)
+    if is_already_running():
+        # Можно показать сообщение или просто выйти
+        sys.exit(0)
     
     app = AIHelperApp()
     sys.exit(app.run())

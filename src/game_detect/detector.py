@@ -6,7 +6,7 @@ import win32gui
 import win32process
 import psutil
 from dataclasses import dataclass
-from typing import Optional
+from typing import Optional, List
 
 
 @dataclass
@@ -93,21 +93,43 @@ KNOWN_APPS = {
 class ContextDetector:
     """Определяет контекст активного окна"""
     
+    # Заголовки окон, которые нужно игнорировать
+    IGNORED_TITLES = ["AI Helper", "AI-Helper", "Настройки"]
+    
     def __init__(self):
         self._last_context: Optional[AppContext] = None
     
+    def _get_all_windows(self) -> List[tuple]:
+        """Получить список всех видимых окон"""
+        windows = []
+        
+        def enum_callback(hwnd, _):
+            if win32gui.IsWindowVisible(hwnd):
+                title = win32gui.GetWindowText(hwnd)
+                if title:
+                    windows.append((hwnd, title))
+            return True
+        
+        win32gui.EnumWindows(enum_callback, None)
+        return windows
+    
     def get_active_window_context(self) -> Optional[AppContext]:
-        """Получить контекст активного окна"""
+        """Получить контекст активного окна (игнорируя AI Helper)"""
         try:
             # Получаем handle активного окна
             hwnd = win32gui.GetForegroundWindow()
             if not hwnd:
-                return None
+                return self._last_context
             
             # Получаем заголовок окна
             window_title = win32gui.GetWindowText(hwnd)
+            
+            # Если это наше окно - возвращаем последний контекст
+            if any(ignored in window_title for ignored in self.IGNORED_TITLES):
+                return self._last_context
+            
             if not window_title:
-                return None
+                return self._last_context
             
             # Получаем PID процесса
             _, pid = win32process.GetWindowThreadProcessId(hwnd)

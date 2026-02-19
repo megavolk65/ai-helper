@@ -5,19 +5,25 @@
 import re
 import sys
 import os
+import ctypes
 from typing import Optional
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QTextBrowser, QLineEdit, QPushButton, QLabel,
-    QApplication, QSizeGrip
+    QApplication, QSizeGrip, QComboBox
 )
-from PyQt6.QtCore import Qt, QThread, pyqtSignal, QUrl, QByteArray
+from PyQt6.QtCore import Qt, QThread, pyqtSignal, QUrl, QByteArray, QTimer
+import json
 from PyQt6.QtGui import QFont, QTextCursor, QDesktopServices, QPixmap
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 from .styles import DARK_THEME, CHAT_MESSAGE_CSS
+from .settings_dialog import SettingsDialog
+from .web_dialog import WebDialog
 import config
+
+from src.localization import Localization, t
 
 
 class AIWorker(QThread):
@@ -26,18 +32,27 @@ class AIWorker(QThread):
     response_chunk = pyqtSignal(str)
     error_occurred = pyqtSignal(str)
     
-    def __init__(self, gpt_client, message: str, screenshot_context: str = ""):
+    def __init__(self, gpt_client, message: str, screenshot_context: str = "", image_data: bytes = None):
         super().__init__()
         self.gpt_client = gpt_client
         self.message = message
         self.screenshot_context = screenshot_context
+        self.image_data = image_data
     
     def run(self):
         try:
-            response = self.gpt_client.send_message(
-                self.message,
-                screenshot_context=self.screenshot_context
-            )
+            # Если есть изображение - используем send_request
+            if self.image_data:
+                response = self.gpt_client.send_request(
+                    self.message,
+                    image_data=self.image_data
+                )
+            else:
+                # Иначе обычный текстовый запрос
+                response = self.gpt_client.send_message(
+                    self.message,
+                    screenshot_context=self.screenshot_context
+                )
             self.response_ready.emit(response)
         except Exception as e:
             self.error_occurred.emit(str(e))
@@ -49,6 +64,8 @@ class OverlayWindow(QMainWindow):
     # Сигналы
     screenshot_requested = pyqtSignal()
     hide_requested = pyqtSignal()
+    hotkeys_changed = pyqtSignal(str, str)  # hotkey_overlay, hotkey_screenshot
+    autostart_changed = pyqtSignal(bool)  # Изменение автозапуска
     
     def __init__(self, gpt_client=None, context_detector=None):
         super().__init__()
@@ -57,32 +74,125 @@ class OverlayWindow(QMainWindow):
         self.context_detector = context_detector
         self._current_screenshot_context = ""
         self._current_screenshot_image: Optional[QPixmap] = None
+        self._current_screenshot_bytes: Optional[bytes] = None  # Байты изображения
         self._worker: Optional[AIWorker] = None
         self._chat_history_html = ""
+        self.autostart_checker = None  # Функция для проверки состояния автозапуска
+        
+        # Загружаем язык из настроек
+        self._load_language()
         
         self._setup_window()
         self._setup_ui()
         self._apply_styles()
+        self._update_context()  # Устанавливаем контекст один раз при старте
+        
+        # Подписываемся на смену языка
+        Localization.add_listener(self._update_ui_texts)
     
     def _setup_window(self):
         """Настройка окна"""
-        self.setWindowTitle(config.APP_NAME)
+        self.setWindowTitle(t("app_name"))
         
-        # Флаги окна: поверх всех, без рамки, как инструмент
+        # Флаги окна для работы поверх полноэкранных игр
         self.setWindowFlags(
             Qt.WindowType.FramelessWindowHint |
-            Qt.WindowType.WindowStaysOnTopHint |
-            Qt.WindowType.Tool
+            Qt.WindowType.WindowStaysOnTopHint
         )
+        
+        # Атрибуты для оверлея
+        self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, False)  # Активируем окно
         
         # Прозрачность
         self.setWindowOpacity(config.OVERLAY_OPACITY)
+        
+        # Применяем Windows-специфичные флаги после показа окна
+        self._apply_windows_overlay_flags()
         
         # Размеры
         self.resize(config.OVERLAY_WIDTH, config.OVERLAY_HEIGHT)
         
         # Позиционирование
         self._position_window()
+    
+    def _apply_windows_overlay_flags(self):
+        """Применить Windows-специфичные флаги для работы поверх игр"""
+        try:
+            import ctypes
+            from ctypes import wintypes
+            
+            # Константы Windows API
+            GWL_EXSTYLE = -20
+            WS_EX_TOPMOST = 0x00000008
+            WS_EX_LAYERED = 0x00080000
+            WS_EX_TRANSPARENT = 0x00000020
+            HWND_TOPMOST = -1
+            SWP_NOMOVE = 0x0002
+            SWP_NOSIZE = 0x0001
+            SWP_NOACTIVATE = 0x0010
+            
+            # Получаем HWND окна
+            hwnd = int(self.winId())
+            
+            # Получаем текущие флаги
+            user32 = ctypes.windll.user32
+            ex_style = user32.GetWindowLongW(hwnd, GWL_EXSTYLE)
+            
+            # Добавляем флаги для оверлея
+            ex_style |= WS_EX_LAYERED | WS_EX_TOPMOST
+            user32.SetWindowLongW(hwnd, GWL_EXSTYLE, ex_style)
+            
+            # Устанавливаем окно поверх всех
+            user32.SetWindowPos(
+                hwnd, HWND_TOPMOST,
+                0, 0, 0, 0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE
+            )
+            
+        except Exception as e:
+            print(f"Warning: Failed to apply Windows overlay flags: {e}")
+    
+    def _force_focus_from_game(self):
+        """Принудительно забрать фокус у игры через AttachThreadInput"""
+        try:
+            user32 = ctypes.windll.user32
+            kernel32 = ctypes.windll.kernel32
+            
+            # Получаем HWND нашего окна
+            our_hwnd = int(self.winId())
+            
+            # Получаем HWND окна на переднем плане (игра)
+            foreground_hwnd = user32.GetForegroundWindow()
+            
+            if foreground_hwnd == 0 or foreground_hwnd == our_hwnd:
+                # Если мы уже в фокусе или нет окна на переднем плане
+                return
+            
+            # Получаем ID потоков
+            foreground_thread = user32.GetWindowThreadProcessId(foreground_hwnd, None)
+            our_thread = kernel32.GetCurrentThreadId()
+            
+            if foreground_thread == 0 or our_thread == 0:
+                return
+            
+            # Подключаемся к потоку ввода игры
+            user32.AttachThreadInput(foreground_thread, our_thread, True)
+            
+            try:
+                # Забираем фокус
+                user32.SetForegroundWindow(our_hwnd)
+                user32.SetFocus(our_hwnd)
+                self.activateWindow()
+                self.raise_()
+            finally:
+                # Отключаемся от потока ввода
+                user32.AttachThreadInput(foreground_thread, our_thread, False)
+            
+        except Exception as e:
+            print(f"Warning: Failed to force focus: {e}")
+            # Fallback на стандартные методы
+            self.activateWindow()
+            self.raise_()
     
     def _position_window(self):
         """Позиционирование окна на экране"""
@@ -121,31 +231,50 @@ class OverlayWindow(QMainWindow):
         # === Заголовок ===
         header_layout = QHBoxLayout()
         
+        # Кнопка переключения языка
+        self.lang_btn = QPushButton()
+        self.lang_btn.setObjectName("langButton")
+        self.lang_btn.setFixedSize(50, 24)
+        self.lang_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.lang_btn.clicked.connect(self._toggle_language)
+        self._update_lang_button()
+        header_layout.addWidget(self.lang_btn)
+        
         # Название
-        title_label = QLabel(config.APP_NAME)
-        title_label.setObjectName("titleLabel")
-        header_layout.addWidget(title_label)
+        self.title_label = QLabel(t("app_name"))
+        self.title_label.setObjectName("titleLabel")
+        header_layout.addWidget(self.title_label)
         
         header_layout.addStretch()
         
+        # Кнопка обновления контекста
+        self.refresh_context_btn = QPushButton("↻")
+        self.refresh_context_btn.setObjectName("refreshContextButton")
+        self.refresh_context_btn.setFixedSize(28, 28)
+        self.refresh_context_btn.setToolTip(t("refresh_context"))
+        self.refresh_context_btn.clicked.connect(self._update_context)
+        header_layout.addWidget(self.refresh_context_btn)
+        
         # Контекст (игра/приложение)
-        self.context_label = QLabel("Не определено")
+        self.context_label = QLabel(t("not_detected"))
         self.context_label.setObjectName("contextLabel")
         header_layout.addWidget(self.context_label)
         
         # Кнопка закрытия
-        close_btn = QPushButton("✕")
-        close_btn.setFixedSize(30, 30)
-        close_btn.clicked.connect(self.hide)
-        header_layout.addWidget(close_btn)
+        self.close_btn = QPushButton("X")
+        self.close_btn.setObjectName("closeButton")
+        self.close_btn.setFixedSize(30, 30)
+        self.close_btn.clicked.connect(self.hide)
+        header_layout.addWidget(self.close_btn)
         
         main_layout.addLayout(header_layout)
         
         # === Область чата ===
         self.chat_display = QTextBrowser()
         self.chat_display.setOpenExternalLinks(False)
+        self.chat_display.setOpenLinks(False)  # Предотвращаем сброс содержимого при клике
         self.chat_display.anchorClicked.connect(self._handle_link_click)
-        self.chat_display.setPlaceholderText("Задай вопрос...")
+        self.chat_display.setPlaceholderText(t("ask_question"))
         main_layout.addWidget(self.chat_display, 1)
         
         # === Превью скриншота ===
@@ -155,11 +284,11 @@ class OverlayWindow(QMainWindow):
         screenshot_preview_layout.setSpacing(5)
         
         preview_header = QHBoxLayout()
-        preview_label = QLabel("📷 Превью скриншота:")
-        preview_label.setStyleSheet("color: #4fc3f7; font-size: 12px; font-weight: bold;")
-        preview_header.addWidget(preview_label)
+        self.preview_label = QLabel(t("screenshot_preview"))
+        self.preview_label.setStyleSheet("color: #4fc3f7; font-size: 12px; font-weight: bold;")
+        preview_header.addWidget(self.preview_label)
         
-        remove_preview_btn = QPushButton("✕")
+        remove_preview_btn = QPushButton("X")
         remove_preview_btn.setFixedSize(20, 20)
         remove_preview_btn.setObjectName("removePreviewButton")
         remove_preview_btn.clicked.connect(self._remove_screenshot)
@@ -192,18 +321,18 @@ class OverlayWindow(QMainWindow):
         # Кнопка скриншота
         self.screenshot_btn = QPushButton("📷")
         self.screenshot_btn.setObjectName("screenshotButton")
-        self.screenshot_btn.setToolTip("Сделать скриншот (Ctrl+Shift+S)")
+        self.screenshot_btn.setToolTip(t("take_screenshot"))
         self.screenshot_btn.clicked.connect(self._on_screenshot_click)
         input_layout.addWidget(self.screenshot_btn)
         
         # Поле ввода
         self.input_field = QLineEdit()
-        self.input_field.setPlaceholderText("Введите вопрос...")
+        self.input_field.setPlaceholderText(t("enter_question"))
         self.input_field.returnPressed.connect(self._on_send_message)
         input_layout.addWidget(self.input_field, 1)
         
         # Кнопка отправки
-        self.send_btn = QPushButton("Отправить")
+        self.send_btn = QPushButton(t("send"))
         self.send_btn.setObjectName("sendButton")
         self.send_btn.clicked.connect(self._on_send_message)
         input_layout.addWidget(self.send_btn)
@@ -214,12 +343,32 @@ class OverlayWindow(QMainWindow):
         footer_layout = QHBoxLayout()
         
         # Кнопка очистки
-        clear_btn = QPushButton("Очистить чат")
-        clear_btn.setObjectName("clearButton")
-        clear_btn.clicked.connect(self._clear_chat)
-        footer_layout.addWidget(clear_btn)
+        self.clear_btn = QPushButton(t("clear_chat"))
+        self.clear_btn.setObjectName("clearButton")
+        self.clear_btn.clicked.connect(self._clear_chat)
+        footer_layout.addWidget(self.clear_btn)
         
         footer_layout.addStretch()
+        
+        # Выбор модели
+        self.model_label = QLabel(t("model"))
+        self.model_label.setStyleSheet("color: #6c757d; font-size: 12px;")
+        footer_layout.addWidget(self.model_label)
+        
+        self.model_combo = QComboBox()
+        self.model_combo.setObjectName("modelCombo")
+        self.model_combo.setMinimumWidth(200)
+        self._populate_models()
+        self.model_combo.currentIndexChanged.connect(self._on_model_changed)
+        footer_layout.addWidget(self.model_combo)
+        
+        # Кнопка настроек
+        self.settings_btn = QPushButton("⚙")
+        self.settings_btn.setObjectName("settingsButton")
+        self.settings_btn.setFixedSize(30, 30)
+        self.settings_btn.setToolTip(t("settings"))
+        self.settings_btn.clicked.connect(self._open_settings)
+        footer_layout.addWidget(self.settings_btn)
         
         # Индикатор скриншота
         self.screenshot_indicator = QLabel("")
@@ -323,8 +472,10 @@ class OverlayWindow(QMainWindow):
         return text
     
     def _handle_link_click(self, url: QUrl):
-        """Обработка клика по ссылке"""
-        QDesktopServices.openUrl(url)
+        """Обработка клика по ссылке - открыть во встроенном браузере"""
+        url_str = url.toString()
+        dialog = WebDialog(self, url_str)
+        dialog.exec()
     
     def _on_send_message(self):
         """Отправка сообщения"""
@@ -341,9 +492,6 @@ class OverlayWindow(QMainWindow):
             display_text = f"📷 [Со скриншотом]\n{text}"
         self._add_message("user", display_text)
         
-        # Обновляем контекст
-        self._update_context()
-        
         # Блокируем UI
         self._set_input_enabled(False)
         
@@ -352,7 +500,8 @@ class OverlayWindow(QMainWindow):
             self._worker = AIWorker(
                 self.gpt_client,
                 text,
-                self._current_screenshot_context
+                self._current_screenshot_context,
+                self._current_screenshot_bytes  # Передаём байты изображения
             )
             self._worker.response_ready.connect(self._on_response)
             self._worker.error_occurred.connect(self._on_error)
@@ -394,6 +543,9 @@ class OverlayWindow(QMainWindow):
         self._current_screenshot_context = context
         
         if context and image_data:
+            # Сохраняем байты изображения
+            self._current_screenshot_bytes = image_data
+            
             # Создаём превью
             pixmap = QPixmap()
             pixmap.loadFromData(QByteArray(image_data))
@@ -405,7 +557,7 @@ class OverlayWindow(QMainWindow):
             self._current_screenshot_image = pixmap
             self.screenshot_preview.setPixmap(pixmap)
             self.screenshot_preview_container.show()
-            self.screenshot_indicator.setText("📷 Скриншот прикреплён")
+            self.screenshot_indicator.setText(t("screenshot_attached"))
         else:
             self._remove_screenshot()
     
@@ -413,23 +565,41 @@ class OverlayWindow(QMainWindow):
         """Удалить скриншот"""
         self._current_screenshot_context = ""
         self._current_screenshot_image = None
+        self._current_screenshot_bytes = None
         self.screenshot_preview.clear()
         self.screenshot_preview_container.hide()
         self.screenshot_indicator.setText("")
     
     def _update_context(self):
         """Обновить контекст (игра/приложение)"""
-        if self.context_detector:
-            context = self.context_detector.get_active_window_context()
-            if context:
-                self.context_label.setText(f"{context.app_name}")
-                
-                # Обновляем системный промпт
-                if self.gpt_client:
-                    game_name = context.app_name if context.app_type == "game" else None
-                    self.gpt_client.update_context(game_name=game_name)
-            else:
-                self.context_label.setText("Не определено")
+        if not self.context_detector:
+            return
+        
+        # Если окно видимо - скрываем, определяем контекст, показываем
+        if self.isVisible():
+            self.hide()
+            QTimer.singleShot(150, self._do_update_context)
+        else:
+            self._do_update_context()
+    
+    def _do_update_context(self):
+        """Фактически обновить контекст"""
+        context = self.context_detector.get_active_window_context()
+        if context:
+            self.context_label.setText(f"{context.app_name}")
+            
+            # Обновляем системный промпт
+            if self.gpt_client:
+                game_name = context.app_name if context.app_type == "game" else None
+                self.gpt_client.update_context(game_name=game_name)
+        else:
+            self.context_label.setText(t("not_detected"))
+        
+        # Показываем окно обратно
+        if not self.isVisible():
+            self.show()
+            self._force_focus_from_game()
+            self.input_field.setFocus()
     
     def _clear_chat(self):
         """Очистить чат"""
@@ -445,9 +615,12 @@ class OverlayWindow(QMainWindow):
         if self.isVisible():
             self.hide()
         else:
-            self._update_context()
             self.show()
-            self.activateWindow()
+            
+            # Принудительно забираем фокус у игры
+            self._force_focus_from_game()
+            
+            # Устанавливаем фокус на поле ввода
             self.input_field.setFocus()
     
     def keyPressEvent(self, event):
@@ -467,3 +640,188 @@ class OverlayWindow(QMainWindow):
         if event.buttons() == Qt.MouseButton.LeftButton and hasattr(self, '_drag_pos'):
             self.move(event.globalPosition().toPoint() - self._drag_pos)
             event.accept()
+    
+    # === Выбор модели ===
+    
+    def _get_settings_path(self):
+        """Получить путь к файлу настроек"""
+        return os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "settings.json")
+    
+    def _load_settings(self):
+        """Загрузить настройки"""
+        try:
+            with open(self._get_settings_path(), 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except:
+            return {}
+    
+    def _save_settings(self, settings):
+        """Сохранить настройки"""
+        try:
+            with open(self._get_settings_path(), 'w', encoding='utf-8') as f:
+                json.dump(settings, f, indent=2)
+        except:
+            pass
+    
+    def _get_models_list(self):
+        """Получить список моделей (из settings или config)"""
+        settings = self._load_settings()
+        models = settings.get("models", [])
+        
+        # Если в настройках пусто - используем дефолтные из config
+        if not models:
+            models = getattr(config, 'OPENROUTER_MODELS', [])
+        
+        return models
+    
+    def _populate_models(self):
+        """Заполнить список моделей"""
+        models = self._get_models_list()
+        
+        # Загружаем сохранённую модель
+        settings = self._load_settings()
+        saved_model = settings.get("selected_model", "")
+        
+        for model_id, display_name in models:
+            self.model_combo.addItem(display_name, model_id)
+        
+        # Устанавливаем сохранённую модель
+        if saved_model:
+            for i in range(self.model_combo.count()):
+                if self.model_combo.itemData(i) == saved_model:
+                    self.model_combo.setCurrentIndex(i)
+                    if self.gpt_client:
+                        self.gpt_client.set_model(saved_model)
+                    break
+    
+    def _refresh_models_combo(self):
+        """Обновить комбобокс моделей"""
+        # Сохраняем текущую модель
+        current_model = self.model_combo.currentData()
+        
+        # Очищаем и заполняем заново
+        self.model_combo.clear()
+        models = self._get_models_list()
+        
+        for model_id, display_name in models:
+            self.model_combo.addItem(display_name, model_id)
+        
+        # Восстанавливаем выбор
+        if current_model:
+            for i in range(self.model_combo.count()):
+                if self.model_combo.itemData(i) == current_model:
+                    self.model_combo.setCurrentIndex(i)
+                    break
+    
+    def _on_model_changed(self, index: int):
+        """Обработчик смены модели"""
+        if index < 0:
+            return
+        
+        model_id = self.model_combo.itemData(index)
+        if model_id and self.gpt_client:
+            self.gpt_client.set_model(model_id)
+            # Сохраняем выбор
+            settings = self._load_settings()
+            settings["selected_model"] = model_id
+            self._save_settings(settings)
+    
+    def _open_settings(self):
+        """Открыть диалог настроек"""
+        current_settings = self._load_settings()
+        
+        # Добавляем текущие горячие клавиши из config если их нет в settings
+        if "hotkey_overlay" not in current_settings:
+            current_settings["hotkey_overlay"] = getattr(config, 'HOTKEY_TOGGLE_OVERLAY', 'Insert')
+        if "hotkey_screenshot" not in current_settings:
+            current_settings["hotkey_screenshot"] = getattr(config, 'HOTKEY_SCREENSHOT', 'Home')
+        if "api_key" not in current_settings:
+            current_settings["api_key"] = getattr(config, 'OPENROUTER_API_KEY', '')
+        
+        # Добавляем текущие модели
+        if "models" not in current_settings:
+            current_settings["models"] = getattr(config, 'OPENROUTER_MODELS', [])
+        
+        # Добавляем текущее состояние автозапуска
+        if self.autostart_checker:
+            current_settings["autostart"] = self.autostart_checker()
+        
+        dialog = SettingsDialog(self, current_settings)
+        dialog.settings_saved.connect(self._on_settings_saved)
+        dialog.exec()
+    
+    def _on_settings_saved(self, new_settings: dict):
+        """Обработчик сохранения настроек"""
+        self._save_settings(new_settings)
+        
+        # Обновляем API ключ в клиенте
+        if self.gpt_client and "api_key" in new_settings:
+            api_key = new_settings["api_key"]
+            if api_key:
+                self.gpt_client.api_key = api_key
+        
+        # Обновляем список моделей
+        if "models" in new_settings:
+            self._refresh_models_combo()
+        
+        # Обновляем горячие клавиши
+        hotkey_overlay = new_settings.get("hotkey_overlay", "Insert")
+        hotkey_screenshot = new_settings.get("hotkey_screenshot", "Home")
+        self.hotkeys_changed.emit(hotkey_overlay, hotkey_screenshot)
+        
+        # Обновляем автозапуск
+        if "autostart" in new_settings:
+            self.autostart_changed.emit(new_settings["autostart"])
+    
+    # === Локализация ===
+    
+    def _load_language(self):
+        """Загрузить язык из настроек"""
+        settings = self._load_settings()
+        lang = settings.get("language", "ru")
+        Localization.set_language(lang)
+    
+    def _toggle_language(self):
+        """Переключить язык"""
+        Localization.toggle_language()
+        self._update_lang_button()
+        
+        # Сохраняем выбор
+        settings = self._load_settings()
+        settings["language"] = Localization.get_language()
+        self._save_settings(settings)
+    
+    def _update_lang_button(self):
+        """Обновить текст кнопки языка"""
+        lang = Localization.get_language()
+        if lang == "ru":
+            self.lang_btn.setText("RU|en")
+        else:
+            self.lang_btn.setText("ru|EN")
+    
+    def _update_ui_texts(self):
+        """Обновить все тексты UI при смене языка"""
+        self._update_lang_button()
+        
+        # Обновляем название
+        self.title_label.setText(t("app_name"))
+        self.setWindowTitle(t("app_name"))
+        
+        # Обновляем тексты
+        self.refresh_context_btn.setToolTip(t("refresh_context"))
+        self.chat_display.setPlaceholderText(t("ask_question"))
+        self.preview_label.setText(t("screenshot_preview"))
+        self.screenshot_btn.setToolTip(t("take_screenshot"))
+        self.input_field.setPlaceholderText(t("enter_question"))
+        self.send_btn.setText(t("send"))
+        self.clear_btn.setText(t("clear_chat"))
+        self.model_label.setText(t("model"))
+        self.settings_btn.setToolTip(t("settings"))
+        
+        # Обновляем контекст если не определён
+        if self.context_label.text() in ("Не определено", "Not detected"):
+            self.context_label.setText(t("not_detected"))
+        
+        # Обновляем индикатор скриншота
+        if self._current_screenshot_bytes:
+            self.screenshot_indicator.setText(t("screenshot_attached"))

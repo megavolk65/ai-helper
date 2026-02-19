@@ -42,6 +42,7 @@ env/
 
 # Local config (contains API keys)
 config.py
+settings.json
 
 # Yandex Cloud authorized keys (CRITICAL - contains private keys!)
 authorized_key.json

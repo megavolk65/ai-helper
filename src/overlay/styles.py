@@ -80,8 +80,9 @@ QPushButton#sendButton {
 /* Кнопка скриншота */
 QPushButton#screenshotButton {
     background-color: #0f3460;
-    min-width: 40px;
+    min-width: 45px;
     padding: 10px;
+    font-size: 20px;
 }
 
 QPushButton#screenshotButton:hover {
@@ -98,6 +99,135 @@ QPushButton#clearButton {
 
 QPushButton#clearButton:hover {
     color: #e94560;
+}
+
+/* Выбор модели */
+QComboBox#modelCombo {
+    background-color: #16213e;
+    border: 1px solid #0f3460;
+    border-radius: 6px;
+    padding: 6px 35px 6px 12px;
+    color: #eaeaea;
+    font-size: 14px;
+    font-weight: bold;
+    min-width: 220px;
+}
+
+QComboBox#modelCombo:hover {
+    border-color: #4fc3f7;
+}
+
+QComboBox#modelCombo::drop-down {
+    border: none;
+    width: 25px;
+}
+
+QComboBox#modelCombo::down-arrow {
+    image: url(assets/arrow_down.png);
+    width: 12px;
+    height: 8px;
+}
+
+QComboBox#modelCombo QAbstractItemView {
+    background-color: #16213e;
+    border: 1px solid #0f3460;
+    border-radius: 6px;
+    selection-background-color: #e94560;
+    color: #eaeaea;
+    padding: 5px;
+}
+
+QComboBox#modelCombo QAbstractItemView::item {
+    padding: 8px 10px;
+    min-height: 25px;
+}
+
+QComboBox#modelCombo QAbstractItemView::item:hover {
+    background-color: #0f3460;
+}
+
+/* Кнопка закрытия */
+QPushButton#closeButton {
+    background-color: #e94560;
+    color: #ffffff;
+    font-size: 18px;
+    font-weight: bold;
+    border: none;
+    border-radius: 4px;
+    padding: 0px;
+}
+
+QPushButton#closeButton:hover {
+    background-color: #ff6b6b;
+    color: #ffffff;
+}
+
+/* Кнопка удаления превью скриншота */
+QPushButton#removePreviewButton {
+    background-color: #e94560;
+    color: #ffffff;
+    font-size: 14px;
+    font-weight: bold;
+    border: none;
+    border-radius: 4px;
+    padding: 0px;
+}
+
+QPushButton#removePreviewButton:hover {
+    background-color: #ff6b6b;
+    color: #ffffff;
+}
+
+/* Кнопка настроек */
+QPushButton#settingsButton {
+    background-color: #0f3460;
+    color: #ffffff;
+    font-size: 16px;
+    border: none;
+    border-radius: 4px;
+    padding: 0px;
+}
+
+QPushButton#settingsButton:hover {
+    background-color: #1a4a7a;
+}
+
+/* Кнопка обновления контекста */
+QPushButton#refreshContextButton {
+    background: none;
+    background-color: transparent;
+    border: none;
+    border-radius: 0px;
+    color: #4fc3f7;
+    font-size: 22px;
+    padding: 0px;
+    margin: 0px;
+}
+
+QPushButton#refreshContextButton:hover {
+    background: none;
+    background-color: transparent;
+    color: #81d4fa;
+}
+
+QPushButton#refreshContextButton:pressed {
+    background: none;
+    background-color: transparent;
+}
+
+/* Кнопка переключения языка */
+QPushButton#langButton {
+    background-color: #0f3460;
+    border: none;
+    border-radius: 4px;
+    color: #4fc3f7;
+    font-size: 11px;
+    font-weight: bold;
+    padding: 2px 6px;
+}
+
+QPushButton#langButton:hover {
+    background-color: #1a4a7a;
 }
 
 /* Метка контекста (название игры) */

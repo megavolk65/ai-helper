@@ -1,6 +1,4 @@
 """AI integrations"""
-from .yandex_gpt import YandexGPTClient
-from .yandex_gpt_rest import YandexGPTRestClient
-from .vision import YandexVisionClient
+from .gemini_client import GeminiClient as YandexAssistantClient  # Используем Gemini
 
-__all__ = ["YandexGPTClient", "YandexGPTRestClient", "YandexVisionClient"]
+__all__ = ["YandexAssistantClient"]
