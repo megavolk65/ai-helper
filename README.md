@@ -1,8 +1,4 @@
-<p align="center">
-  <img src="assets/icon_256.png" alt="AI Helper" width="128">
-</p>
-
-# AI Helper
+# <img src="assets/icon_256.png" alt="" width="32"> AI Helper
 
 <p align="center">
   <img src="assets/logo.png" alt="AI Helper" width="400">
