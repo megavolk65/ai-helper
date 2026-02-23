@@ -2,7 +2,7 @@
 Версия приложения
 """
 
-__version__ = "0.9.2"
+__version__ = "0.9.3"
 
 GITHUB_REPO = "megavolk65/ai-helper"
 GITHUB_RELEASES_URL = f"https://github.com/{GITHUB_REPO}/releases"

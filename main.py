@@ -308,7 +308,7 @@ class AIHelperApp(QObject):
     def run(self):
         """Запуск приложения"""
         # Получаем актуальную горячую клавишу из настроек
-        hotkey = self.hotkey_manager.hotkey_overlay or config.HOTKEY_TOGGLE_OVERLAY
+        hotkey = self.hotkey_manager.hotkey_overlay_str or config.HOTKEY_TOGGLE_OVERLAY
         
         # Показываем уведомление о запуске
         self.tray.showMessage(
