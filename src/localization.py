@@ -34,8 +34,8 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "en": "Model:"
     },
     "ask_question": {
-        "ru": "Задай вопрос...",
-        "en": "Ask a question..."
+        "ru": "Помощник уже знает из какой игры или приложения его вызвали, поэтому можно не упоминать это в вопросе. Вы можете добавить скриншот нужного места, чтобы подробнее описать свой запрос.",
+        "en": "The assistant already knows which game or app it was called from, so there's no need to mention it. You can add a screenshot to describe your request in more detail."
     },
     "screenshot_attached": {
         "ru": "📷 Скриншот прикреплён",

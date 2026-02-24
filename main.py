@@ -42,6 +42,7 @@ from src.hotkeys import HotkeyManager
 from src.game_detect import ContextDetector
 from src.screenshot import ScreenCapture
 from src.ai.openrouter_client import OpenRouterClient
+from src.telemetry import send_startup_ping
 
 
 class AIHelperApp(QObject):
@@ -344,6 +345,7 @@ def main():
         sys.exit(0)
     
     app = AIHelperApp()
+    send_startup_ping()
     sys.exit(app.run())
 
 

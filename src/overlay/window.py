@@ -471,13 +471,20 @@ class OverlayWindow(QMainWindow):
         self.chat_display.setOpenExternalLinks(False)
         self.chat_display.setOpenLinks(False)  # Предотвращаем сброс содержимого при клике
         self.chat_display.anchorClicked.connect(self._handle_link_click)
-        self.chat_display.setPlaceholderText(t("ask_question"))
         
         # Кнопка очистки поверх чата (правый нижний угол)
         self.clear_btn = QPushButton(t("clear_chat"), chat_inner)
         self.clear_btn.setObjectName("clearButton")
         self.clear_btn.clicked.connect(self._clear_chat)
         self.clear_btn.raise_()  # Поверх чата
+        
+        # Подсказка по центру чата (контекст + скриншот)
+        self.chat_hint = QLabel(chat_inner)
+        self.chat_hint.setStyleSheet("background: transparent;")
+        self.chat_hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.chat_hint.setTextFormat(Qt.TextFormat.RichText)
+        self.chat_hint.setWordWrap(True)
+        self.chat_hint.hide()
         
         # Подсказка горячих клавиш (внизу чата, показывается когда чат пуст)
         self.hotkeys_hint = QLabel(chat_inner)
@@ -700,12 +707,35 @@ class OverlayWindow(QMainWindow):
         self._update_hotkeys_hint()
     
     def _update_hotkeys_hint(self):
-        """Показать/скрыть подсказку горячих клавиш внизу чата"""
+        """Показать/скрыть подсказку горячих клавиш и хинт в чате"""
         if not hasattr(self, 'hotkeys_hint'):
             return
         
         # Показываем когда чат пуст (setup instruction или вообще ничего)
         chat_is_empty = not self._chat_history_html or self._showing_setup_instruction
+        
+        # Хинт по центру — показываем только когда чат пуст и НЕ показана инструкция
+        if hasattr(self, 'chat_hint'):
+            show_hint = chat_is_empty and not self._showing_setup_instruction
+            if show_hint:
+                lang = Localization.get_language()
+                if lang == "ru":
+                    hint_html = ('<span style="color: #666666; font-size: 22px; line-height: 1.6;">'
+                                 'Помощник уже знает из какой игры<br>или приложения его вызвали,<br>'
+                                 'поэтому можно не упоминать это в вопросе.<br><br>'
+                                 'Вы можете добавить скриншот нужного места,<br>'
+                                 'чтобы подробнее описать свой запрос.</span>')
+                else:
+                    hint_html = ('<span style="color: #666666; font-size: 22px; line-height: 1.6;">'
+                                 'The assistant already knows which game<br>or app it was called from,<br>'
+                                 'so there\'s no need to mention it.<br><br>'
+                                 'You can add a screenshot<br>'
+                                 'to describe your request in more detail.</span>')
+                self.chat_hint.setText(hint_html)
+                self.chat_hint.show()
+                self.chat_hint.raise_()
+            else:
+                self.chat_hint.hide()
         
         if chat_is_empty:
             settings = self._load_settings()
@@ -1125,7 +1155,7 @@ class OverlayWindow(QMainWindow):
     
     def _on_feedback_click(self):
         """Клик по кнопке отзыва - открыть Телеграм"""
-        QDesktopServices.openUrl(QUrl("https://t.me/megavolk"))
+        QDesktopServices.openUrl(QUrl("https://t.me/ai_helper_feedback_bot"))
     
     def _on_version_click(self, event):
         """Клик по версии - открыть GitHub репозиторий или страницу релизов"""
@@ -1166,10 +1196,10 @@ class OverlayWindow(QMainWindow):
         # Показываем сообщение в чате
         lang = Localization.get_language()
         if lang == "ru":
-            message = f'''�� <strong>Доступна новая версия {new_version}!</strong><br>
+            message = f'''<strong>Доступна новая версия {new_version}!</strong><br>
             <a href="{link_url}" style="color: #4fc3f7;">Установить обновление</a>'''
         else:
-            message = f'''�� <strong>New version {new_version} available!</strong><br>
+            message = f'''<strong>New version {new_version} available!</strong><br>
             <a href="{link_url}" style="color: #4fc3f7;">Install update</a>'''
         
         # Добавляем как системное сообщение
@@ -1331,6 +1361,18 @@ class OverlayWindow(QMainWindow):
                 btn_height
             )
             self.clear_btn.raise_()
+            
+            # Позиционируем хинт по центру чата
+            if hasattr(self, 'chat_hint') and self.chat_hint.isVisible():
+                hint_width = self._chat_inner.width() - 60
+                hint_height = self.chat_hint.sizeHint().height()
+                self.chat_hint.setGeometry(
+                    30,
+                    (self._chat_inner.height() - hint_height) // 2,
+                    hint_width,
+                    hint_height
+                )
+                self.chat_hint.raise_()
             
             # Позиционируем подсказку горячих клавиш внизу по центру
             if hasattr(self, 'hotkeys_hint') and self.hotkeys_hint.isVisible():
@@ -1536,7 +1578,7 @@ class OverlayWindow(QMainWindow):
         
         # Обновляем тексты
         self.refresh_context_btn.setToolTip(t("refresh_context"))
-        self.chat_display.setPlaceholderText(t("ask_question"))
+        self.chat_display.setPlaceholderText("")
         self.preview_label.setText(t("screenshot_preview"))
         self.screenshot_btn.setToolTip(t("take_screenshot"))
         self._update_setup_message()  # Учитываем состояние настроек
