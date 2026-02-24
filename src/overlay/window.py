@@ -115,18 +115,52 @@ class StyledModelComboBox(QComboBox):
 
 class UpdateCheckerWorker(QThread):
     """Фоновый поток для проверки обновлений"""
-    update_available = pyqtSignal(str, str)  # (new_version, release_url)
+    update_available = pyqtSignal(str, str, str)  # (new_version, release_url, download_url)
     no_update = pyqtSignal()
     
     def run(self):
         try:
             result = check_for_updates()
             if result:
-                self.update_available.emit(result[0], result[1])
+                self.update_available.emit(result[0], result[1], result[2])
             else:
                 self.no_update.emit()
         except:
             self.no_update.emit()
+
+
+class UpdateDownloaderWorker(QThread):
+    """Фоновый поток для скачивания обновления"""
+    progress = pyqtSignal(int)  # процент 0-100
+    finished = pyqtSignal(str)  # путь к скачанному файлу
+    error = pyqtSignal(str)
+    
+    def __init__(self, download_url: str):
+        super().__init__()
+        self.download_url = download_url
+    
+    def run(self):
+        import tempfile
+        import requests
+        try:
+            response = requests.get(self.download_url, stream=True, timeout=30)
+            response.raise_for_status()
+            
+            total = int(response.headers.get('content-length', 0))
+            filename = self.download_url.split('/')[-1]
+            filepath = os.path.join(tempfile.gettempdir(), filename)
+            
+            downloaded = 0
+            with open(filepath, 'wb') as f:
+                for chunk in response.iter_content(chunk_size=65536):
+                    f.write(chunk)
+                    downloaded += len(chunk)
+                    if total > 0:
+                        self.progress.emit(int(downloaded * 100 / total))
+            
+            self.finished.emit(filepath)
+        except Exception as e:
+            self.error.emit(str(e))
 
 
 class BalanceWorker(QThread):
@@ -205,8 +239,13 @@ class OverlayWindow(QMainWindow):
         self._update_worker: Optional[UpdateCheckerWorker] = None
         self._new_version: Optional[str] = None  # Новая версия если есть
         self._new_version_url: Optional[str] = None
+        self._update_download_url: Optional[str] = None  # Прямая ссылка на .exe
+        self._download_worker: Optional[UpdateDownloaderWorker] = None
+        self._update_progress_placeholder: Optional[str] = None
         self._chat_history_html = ""
         self._showing_setup_instruction = False  # Флаг: показана ли инструкция
+        self._thinking_timer: Optional[QTimer] = None  # Таймер анимации ожидания
+        self._thinking_step = 0  # Шаг анимации
         self.autostart_checker = None  # Функция для проверки состояния автозапуска
         self._web_dialogs = set()  # Открытые браузеры
         self._web_dialogs_were_visible = {}  # Состояние видимости перед скрытием
@@ -440,6 +479,15 @@ class OverlayWindow(QMainWindow):
         self.clear_btn.clicked.connect(self._clear_chat)
         self.clear_btn.raise_()  # Поверх чата
         
+        # Подсказка горячих клавиш (внизу чата, показывается когда чат пуст)
+        self.hotkeys_hint = QLabel(chat_inner)
+        self.hotkeys_hint.setStyleSheet("background: transparent;")
+        self.hotkeys_hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.hotkeys_hint.setTextFormat(Qt.TextFormat.RichText)
+        self.hotkeys_hint.setOpenExternalLinks(False)
+        self.hotkeys_hint.linkActivated.connect(self._on_hotkeys_link)
+        self.hotkeys_hint.hide()
+        
         # Сохраняем ссылку на внутренний контейнер для resizeEvent
         self._chat_inner = chat_inner
         
@@ -602,46 +650,46 @@ class OverlayWindow(QMainWindow):
         
         # Обновляем placeholder поля ввода
         self.input_field.setPlaceholderText(t("enter_question"))
+        
+        # Обновляем подсказку горячих клавиш
+        self._update_hotkeys_hint()
     
     def _show_setup_instruction(self):
         """Показать инструкцию по настройке в области чата"""
         lang = Localization.get_language()
         
+        # Текущие горячие клавиши
+        settings = self._load_settings()
+        hk_overlay = settings.get('hotkey_overlay', config.HOTKEY_TOGGLE_OVERLAY)
+        hk_screenshot = settings.get('hotkey_screenshot', config.HOTKEY_SCREENSHOT)
+        
         if lang == "ru":
-            # Для русского интерфейса - AITunnel (оплата в рублях)
-            html = '''
-            <div style="text-align: center; padding: 30px 20px;">
-                <div style="font-size: 48px; margin-bottom: 15px;">⚙️</div>
-                <div style="font-size: 20px; color: #ffffff; margin-bottom: 12px;">
-                    <strong>Добро пожаловать в AI Helper!</strong>
-                </div>
-                <div style="font-size: 15px; color: #aaaaaa; text-align: left; display: inline-block; line-height: 1.6;">
-                    <strong style="color: #4fc3f7;">Для начала работы:</strong><br>
-                    1. Зарегистрируйтесь на <a href="https://aitunnel.ru" style="color: #4fc3f7;">aitunnel.ru</a><br>
-                    2. Откройте настройки (⚙️) и введите API-ключ<br><br>
-                    <strong style="color: #ff9800;">Выбор провайдера:</strong><br>
-                    • <strong>AITunnel</strong> — оплата в рублях, бесплатных моделей нет<br>
-                    • <strong>OpenRouter</strong> — оплата в $, есть бесплатные модели<br><br>
-                    <span style="color: #888;">Добавьте модели с поддержкой Vision для работы со скриншотами</span>
+            html = f'''
+            <div style="padding: 30px 25px 30px 20%;">
+                <div style="font-size: 17px; color: #cccccc; line-height: 1.7;">
+                    <br>
+                    Чтобы пользоваться программой <strong style="color: #ffffff;">бесплатно</strong> —
+                    зарегистрируйтесь на <a href="https://openrouter.ai/keys" style="color: #4fc3f7;">OpenRouter</a>
+                    и введите API-ключ в <a href="action://settings" style="color: #ff9800;">настройках</a>.<br>
+                    <br>
+                    Если вас не устраивает качество ответов бесплатных моделей — можно добавить другие бесплатные или платные (более качественные) модели:<br>
+                    &bull; Российские карты — <a href="https://aitunnel.ru" style="color: #4fc3f7;">AITunnel</a><br>
+                    &bull; Зарубежные карты — <a href="https://openrouter.ai/keys" style="color: #4fc3f7;">OpenRouter</a>
                 </div>
             </div>
             '''
         else:
-            # Для английского - OpenRouter
-            html = '''
-            <div style="text-align: center; padding: 30px 20px;">
-                <div style="font-size: 48px; margin-bottom: 15px;">⚙️</div>
-                <div style="font-size: 20px; color: #ffffff; margin-bottom: 12px;">
-                    <strong>Welcome to AI Helper!</strong>
-                </div>
-                <div style="font-size: 15px; color: #aaaaaa; text-align: left; display: inline-block; line-height: 1.6;">
-                    <strong style="color: #4fc3f7;">To get started:</strong><br>
-                    1. Sign up at <a href="https://openrouter.ai/keys" style="color: #4fc3f7;">openrouter.ai/keys</a><br>
-                    2. Open settings (⚙️) and enter your API key<br><br>
-                    <strong style="color: #ff9800;">Provider choice:</strong><br>
-                    • <strong>OpenRouter</strong> — pay in $, has FREE models<br>
-                    • <strong>AITunnel</strong> — pay in ₽, no free models<br><br>
-                    <span style="color: #888;">Add Vision models to work with screenshots</span>
+            html = f'''
+            <div style="padding: 30px 25px 30px 20%;">
+                <div style="font-size: 17px; color: #cccccc; line-height: 1.7;">
+                    <br>
+                    To use the app for <strong style="color: #ffffff;">free</strong> —
+                    sign up at <a href="https://openrouter.ai/keys" style="color: #4fc3f7;">OpenRouter</a>
+                    and enter your API key in <a href="action://settings" style="color: #ff9800;">settings</a>.<br>
+                    <br>
+                    You can also add other free or paid (higher quality) models:<br>
+                    &bull; Pay in $ — <a href="https://openrouter.ai/keys" style="color: #4fc3f7;">OpenRouter</a><br>
+                    &bull; Pay in ₽ — <a href="https://aitunnel.ru" style="color: #4fc3f7;">AITunnel</a>
                 </div>
             </div>
             '''
@@ -649,6 +697,44 @@ class OverlayWindow(QMainWindow):
         self._chat_history_html = html
         self._showing_setup_instruction = True
         self._update_chat_display()
+        self._update_hotkeys_hint()
+    
+    def _update_hotkeys_hint(self):
+        """Показать/скрыть подсказку горячих клавиш внизу чата"""
+        if not hasattr(self, 'hotkeys_hint'):
+            return
+        
+        # Показываем когда чат пуст (setup instruction или вообще ничего)
+        chat_is_empty = not self._chat_history_html or self._showing_setup_instruction
+        
+        if chat_is_empty:
+            settings = self._load_settings()
+            hk_overlay = settings.get('hotkey_overlay', config.HOTKEY_TOGGLE_OVERLAY)
+            hk_screenshot = settings.get('hotkey_screenshot', config.HOTKEY_SCREENSHOT)
+            lang = Localization.get_language()
+            
+            if lang == "ru":
+                html = (f'<span style="color: #888888; font-size: 14px;">'
+                        f'Горячие клавиши: <b>{hk_overlay}</b> — показать/скрыть, <b>{hk_screenshot}</b> — скриншот. '
+                        f'Изменить в <a href="action://settings" style="color: #888888; text-decoration: underline;">настройках</a>'
+                        f'</span>')
+            else:
+                html = (f'<span style="color: #888888; font-size: 14px;">'
+                        f'Hotkeys: <b>{hk_overlay}</b> — overlay, <b>{hk_screenshot}</b> — screenshot. '
+                        f'Change in <a href="action://settings" style="color: #888888; text-decoration: underline;">settings</a>'
+                        f'</span>')
+            
+            self.hotkeys_hint.setText(html)
+            self.hotkeys_hint.show()
+            self.hotkeys_hint.raise_()
+            QTimer.singleShot(0, self._position_chat_elements)
+        else:
+            self.hotkeys_hint.hide()
+    
+    def _on_hotkeys_link(self, url_str: str):
+        """Обработка клика по ссылке в подсказке горячих клавиш"""
+        if url_str == 'action://settings':
+            self._open_settings()
     
     def _update_chat_display(self):
         """Обновить отображение чата"""
@@ -676,6 +762,9 @@ class OverlayWindow(QMainWindow):
         if self._showing_setup_instruction:
             self._chat_history_html = ""
             self._showing_setup_instruction = False
+        
+        # Скрываем подсказку горячих клавиш — в чате есть сообщения
+        self._update_hotkeys_hint()
         
         # Конвертируем markdown в HTML
         html_text = self._markdown_to_html(text)
@@ -741,6 +830,13 @@ class OverlayWindow(QMainWindow):
     def _handle_link_click(self, url: QUrl):
         """Обработка клика по ссылке"""
         url_str = url.toString()
+        # Внутренние действия
+        if url_str == 'action://settings':
+            self._open_settings()
+            return
+        if url_str == 'action://update':
+            self._start_update_download()
+            return
         # API провайдеры и GitHub открываем во внешнем браузере
         if 'openrouter.ai' in url_str or 'aitunnel.ru' in url_str or 'github.com' in url_str:
             QDesktopServices.openUrl(url)
@@ -769,6 +865,9 @@ class OverlayWindow(QMainWindow):
         # Блокируем UI
         self._set_input_enabled(False)
         
+        # Показываем анимацию ожидания
+        self._start_thinking_animation()
+        
         # Запускаем запрос в фоне
         if self.gpt_client:
             # Добавляем контекст активного окна к сообщению
@@ -794,6 +893,7 @@ class OverlayWindow(QMainWindow):
     
     def _on_response(self, response: str):
         """Получен ответ от AI"""
+        self._stop_thinking_animation()
         self._add_message("assistant", response)
         self._set_input_enabled(True)
         # Обновляем баланс после ответа
@@ -801,8 +901,61 @@ class OverlayWindow(QMainWindow):
     
     def _on_error(self, error: str):
         """Произошла ошибка"""
+        self._stop_thinking_animation()
         self._add_message("assistant", f"❌ Ошибка: {error}")
         self._set_input_enabled(True)
+    
+    def _start_thinking_animation(self):
+        """Запустить анимацию ожидания ответа"""
+        self._thinking_step = 0
+        
+        # Добавляем плейсхолдер в чат
+        self._thinking_placeholder = '''
+        <div class="message assistant-message" id="thinking">
+            <div class="message-header">AI Helper</div>
+            <div class="message-content"><span style="color: #888888;">● ○ ○</span></div>
+        </div>
+        '''
+        self._chat_history_html += self._thinking_placeholder
+        self._update_chat_display()
+        
+        # Запускаем таймер анимации
+        self._thinking_timer = QTimer()
+        self._thinking_timer.timeout.connect(self._animate_thinking)
+        self._thinking_timer.start(500)
+    
+    def _animate_thinking(self):
+        """Обновить анимацию точек"""
+        self._thinking_step = (self._thinking_step + 1) % 3
+        dots = ["○", "○", "○"]
+        for i in range(self._thinking_step + 1):
+            dots[i] = "●"
+        dots_str = " ".join(dots)
+        
+        new_placeholder = f'''
+        <div class="message assistant-message" id="thinking">
+            <div class="message-header">AI Helper</div>
+            <div class="message-content"><span style="color: #888888;">{dots_str}</span></div>
+        </div>
+        '''
+        
+        self._chat_history_html = self._chat_history_html.replace(
+            self._thinking_placeholder, new_placeholder
+        )
+        self._thinking_placeholder = new_placeholder
+        self._update_chat_display()
+    
+    def _stop_thinking_animation(self):
+        """Остановить анимацию и убрать плейсхолдер"""
+        if self._thinking_timer:
+            self._thinking_timer.stop()
+            self._thinking_timer = None
+        
+        if hasattr(self, '_thinking_placeholder') and self._thinking_placeholder:
+            self._chat_history_html = self._chat_history_html.replace(
+                self._thinking_placeholder, ""
+            )
+            self._thinking_placeholder = None
     
     def _set_input_enabled(self, enabled: bool):
         """Включить/выключить UI"""
@@ -811,7 +964,7 @@ class OverlayWindow(QMainWindow):
         self.screenshot_btn.setEnabled(enabled)
         
         if not enabled:
-            self.send_btn.setText("⏳")
+            self.send_btn.setText("⌛")
         else:
             self.send_btn.setText("Отправить")
     
@@ -892,6 +1045,7 @@ class OverlayWindow(QMainWindow):
         self._showing_setup_instruction = False
         self._update_chat_display()
         self._update_setup_message()  # Показать инструкцию если нужно
+        self._update_hotkeys_hint()
         
         if self.gpt_client:
             self.gpt_client.clear_history()
@@ -986,10 +1140,11 @@ class OverlayWindow(QMainWindow):
         self._update_worker.update_available.connect(self._on_update_available)
         self._update_worker.start()
     
-    def _on_update_available(self, new_version: str, release_url: str):
+    def _on_update_available(self, new_version: str, release_url: str, download_url: str):
         """Обработчик: доступно обновление"""
         self._new_version = new_version
         self._new_version_url = release_url
+        self._update_download_url = download_url
         
         # Меняем цвет версии на красный
         self.version_label.setText(f"v{get_current_version()} → v{new_version}")
@@ -1005,17 +1160,115 @@ class OverlayWindow(QMainWindow):
         """)
         self.version_label.setToolTip(f"Доступна новая версия! Нажмите для загрузки")
         
+        # Ссылка: если есть прямой download — action://update, иначе GitHub
+        link_url = "action://update" if download_url else release_url
+        
         # Показываем сообщение в чате
         lang = Localization.get_language()
         if lang == "ru":
-            message = f'''🆕 <strong>Доступна новая версия {new_version}!</strong><br>
-            <a href="{release_url}" style="color: #4fc3f7;">Скачать обновление</a>'''
+            message = f'''�� <strong>Доступна новая версия {new_version}!</strong><br>
+            <a href="{link_url}" style="color: #4fc3f7;">Установить обновление</a>'''
         else:
-            message = f'''🆕 <strong>New version {new_version} available!</strong><br>
-            <a href="{release_url}" style="color: #4fc3f7;">Download update</a>'''
+            message = f'''�� <strong>New version {new_version} available!</strong><br>
+            <a href="{link_url}" style="color: #4fc3f7;">Install update</a>'''
         
         # Добавляем как системное сообщение
         self._add_system_message(message)
+    
+    def _start_update_download(self):
+        """Начать скачивание обновления"""
+        if not self._update_download_url:
+            return
+        
+        # Показываем прогресс в чате
+        lang = Localization.get_language()
+        if lang == "ru":
+            progress_text = "Загрузка обновления... 0%"
+        else:
+            progress_text = "Downloading update... 0%"
+        
+        self._update_progress_placeholder = f'''
+        <div class="message system-message" style="background-color: #2d3a4a; border-left: 3px solid #4fc3f7;">
+            <div class="message-content" style="padding: 10px;"><strong>{progress_text}</strong></div>
+        </div>
+        '''
+        self._chat_history_html += self._update_progress_placeholder
+        self._update_chat_display()
+        
+        # Запускаем скачивание
+        self._download_worker = UpdateDownloaderWorker(self._update_download_url)
+        self._download_worker.progress.connect(self._on_update_progress)
+        self._download_worker.finished.connect(self._on_update_downloaded)
+        self._download_worker.error.connect(self._on_update_error)
+        self._download_worker.start()
+    
+    def _on_update_progress(self, percent: int):
+        """Обновить прогресс скачивания"""
+        if not self._update_progress_placeholder:
+            return
+        
+        lang = Localization.get_language()
+        if lang == "ru":
+            progress_text = f"Загрузка обновления... {percent}%"
+        else:
+            progress_text = f"Downloading update... {percent}%"
+        
+        new_placeholder = f'''
+        <div class="message system-message" style="background-color: #2d3a4a; border-left: 3px solid #4fc3f7;">
+            <div class="message-content" style="padding: 10px;"><strong>{progress_text}</strong></div>
+        </div>
+        '''
+        
+        self._chat_history_html = self._chat_history_html.replace(
+            self._update_progress_placeholder, new_placeholder
+        )
+        self._update_progress_placeholder = new_placeholder
+        self._update_chat_display()
+    
+    def _on_update_downloaded(self, filepath: str):
+        """Обновление скачано — запускаем инсталлятор"""
+        lang = Localization.get_language()
+        if lang == "ru":
+            progress_text = "Загрузка завершена. Запуск установщика..."
+        else:
+            progress_text = "Download complete. Launching installer..."
+        
+        if self._update_progress_placeholder:
+            new_placeholder = f'''
+        <div class="message system-message" style="background-color: #2d3a4a; border-left: 3px solid #66bb6a;">
+            <div class="message-content" style="padding: 10px;"><strong>{progress_text}</strong></div>
+        </div>
+        '''
+            self._chat_history_html = self._chat_history_html.replace(
+                self._update_progress_placeholder, new_placeholder
+            )
+            self._update_progress_placeholder = None
+            self._update_chat_display()
+        
+        # Запускаем инсталлятор и закрываем приложение
+        import subprocess
+        subprocess.Popen([filepath], shell=True)
+        QTimer.singleShot(500, QApplication.instance().quit)
+    
+    def _on_update_error(self, error: str):
+        """Ошибка скачивания обновления"""
+        lang = Localization.get_language()
+        if lang == "ru":
+            progress_text = f"Ошибка загрузки: {error}"
+        else:
+            progress_text = f"Download error: {error}"
+        
+        if self._update_progress_placeholder:
+            new_placeholder = f'''
+        <div class="message system-message" style="background-color: #2d3a4a; border-left: 3px solid #ff6b6b;">
+            <div class="message-content" style="padding: 10px;"><strong>{progress_text}</strong></div>
+        </div>
+        '''
+            self._chat_history_html = self._chat_history_html.replace(
+                self._update_progress_placeholder, new_placeholder
+            )
+            self._update_progress_placeholder = None
+            self._update_chat_display()
     
     def _add_system_message(self, html: str):
         """Добавить системное сообщение в чат"""
@@ -1078,6 +1331,18 @@ class OverlayWindow(QMainWindow):
                 btn_height
             )
             self.clear_btn.raise_()
+            
+            # Позиционируем подсказку горячих клавиш внизу по центру
+            if hasattr(self, 'hotkeys_hint') and self.hotkeys_hint.isVisible():
+                hint_width = self._chat_inner.width() - 20
+                hint_height = self.hotkeys_hint.sizeHint().height()
+                self.hotkeys_hint.setGeometry(
+                    10,
+                    self._chat_inner.height() - hint_height - 15,
+                    hint_width,
+                    hint_height
+                )
+                self.hotkeys_hint.raise_()
     
     # === Выбор модели ===
     

@@ -9,12 +9,12 @@ from packaging import version
 from version import __version__, GITHUB_API_RELEASES, GITHUB_RELEASES_URL
 
 
-def check_for_updates() -> Optional[Tuple[str, str]]:
+def check_for_updates() -> Optional[Tuple[str, str, str]]:
     """
     Проверить наличие обновлений на GitHub.
     
     Returns:
-        (new_version, release_url) если есть обновление, иначе None
+        (new_version, release_url, download_url) если есть обновление, иначе None
     """
     try:
         response = requests.get(
@@ -35,7 +35,15 @@ def check_for_updates() -> Optional[Tuple[str, str]]:
         # Сравниваем версии
         if latest_version and version.parse(latest_version) > version.parse(__version__):
             release_url = data.get("html_url", GITHUB_RELEASES_URL)
-            return (latest_version, release_url)
+            
+            # Ищем .exe файл в assets
+            download_url = ""
+            for asset in data.get("assets", []):
+                if asset.get("name", "").endswith(".exe"):
+                    download_url = asset.get("browser_download_url", "")
+                    break
+            
+            return (latest_version, release_url, download_url)
         
         return None
         
