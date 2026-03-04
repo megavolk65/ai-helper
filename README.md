@@ -46,6 +46,7 @@
 - 🌐 **Website:** [aitunnel.ru](https://aitunnel.ru)
 - 🔑 **Get key:** In the personal account after registration.
 - 💳 **Payment:** Russian cards, rubles.
+- ⚠️ **No free models.**
 
 ## Anti-cheat Safety & Display Mode
 
