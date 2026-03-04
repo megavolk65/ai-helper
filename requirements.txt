@@ -1,0 +1,32 @@
+# GUI
+PyQt6==6.6.1
+PyQt6-Qt6==6.6.1
+PyQt6-WebEngine==6.6.0
+PyQt6-WebEngine-Qt6==6.6.0
+PyQt6-sip
+
+# Hotkeys
+pynput>=1.7.6
+
+# Windows API
+pywin32>=306
+
+# AI (OpenRouter)
+PyJWT>=2.8.0
+cryptography>=41.0.0
+
+# Process management
+psutil>=5.9.0
+
+# Screenshots
+mss>=9.0.0
+Pillow>=10.0.0
+
+# HTTP requests (for image loading)
+requests>=2.31.0
+
+# Version comparison
+packaging>=23.0
+
+# Build
+pyinstaller>=6.0.0
